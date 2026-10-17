@@ -1,0 +1,30 @@
+﻿# 编译产物
+bin/
+obj/
+CopyToolWeb/bin/
+CopyToolWeb/obj/
+x64/
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.lib
+*.pdb
+
+# WebView2 运行时数据
+userdata/
+wv2data/
+
+# 日志与配置
+*.log
+config.ini
+host_log.txt
+*_debug.txt
+
+# IDE 与系统文件
+.vs/
+.vscode/
+*.user
+Thumbs.db
+.DS_Store

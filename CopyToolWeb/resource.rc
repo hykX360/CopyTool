@@ -1,0 +1,27 @@
+#include <winuser.h>
+#include "webui_res.h"
+
+1 24 "app.manifest"
+
+/* ============================================================
+   WebUI 前端资源：原样嵌入 exe（RCDATA），由 WebResourceRequested
+   拦截器从内存响应，断网/无 WebUI 文件夹均可运行。
+   路径相对本 .rc 所在目录（CopyToolWeb\）。
+   ============================================================ */
+IDR_WEBUI_INDEX          RCDATA "..\\WebUI\\index.html"
+IDR_WEBUI_RENDERER_JS    RCDATA "..\\WebUI\\renderer.js"
+IDR_WEBUI_DESKTOP_JS     RCDATA "..\\WebUI\\desktop.js"
+IDR_WEBUI_BRIDGE_JS      RCDATA "..\\WebUI\\copytool-bridge.js"
+IDR_WEBUI_UI_JS          RCDATA "..\\WebUI\\ui.js"
+IDR_WEBUI_STYLES_CSS     RCDATA "..\\WebUI\\css\\styles.css"
+IDR_WEBUI_MATERIALS_CSS  RCDATA "..\\WebUI\\css\\materials.css"
+IDR_WEBUI_SH_VERTEX      RCDATA "..\\WebUI\\shaders\\vertex.glsl"
+IDR_WEBUI_SH_BG          RCDATA "..\\WebUI\\shaders\\fragment-bg.glsl"
+IDR_WEBUI_SH_BG_VBLUR    RCDATA "..\\WebUI\\shaders\\fragment-bg-vblur.glsl"
+IDR_WEBUI_SH_BG_HBLUR    RCDATA "..\\WebUI\\shaders\\fragment-bg-hblur.glsl"
+IDR_WEBUI_SH_MAIN        RCDATA "..\\WebUI\\shaders\\fragment-main.glsl"
+IDR_WEBUI_SH_MAIN_1      RCDATA "..\\WebUI\\shaders\\fragment-main-1.glsl"
+IDR_WEBUI_SH_TEST        RCDATA "..\\WebUI\\shaders\\test.glsl"
+IDR_WEBUI_SH_LIB_SDF     RCDATA "..\\WebUI\\shaders\\lib\\sdf.glsl"
+IDR_WEBUI_SH_LIB_MATH    RCDATA "..\\WebUI\\shaders\\lib\\math.glsl"
+IDR_WEBUI_SH_LIB_COLOR   RCDATA "..\\WebUI\\shaders\\lib\\color.glsl"

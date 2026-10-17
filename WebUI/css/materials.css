@@ -1,0 +1,332 @@
+/* ============================================================
+   材质系统：M1-M4
+   M1 液态玻璃  → WebGL 渲染，只需 data-liquid-glass 属性
+   M2 毛玻璃    → WebGL 内合成（.m2-panel 由 fragment-main.glsl 绘制）
+   M3 玻璃卡片  → 备用
+   M4 实心      → 本文件定义
+   ============================================================ */
+
+/* ================= M2：主面板 ================= */
+.m2-panel {
+    position: relative;
+    background: transparent;
+    border: 1px solid transparent;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
+    border-radius: 20px;
+}
+
+.main-panel {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(92vw, 900px);
+    height: min(88vh, 620px);
+    z-index: 1;
+    padding: 20px;
+    display: flex;
+}
+
+/* ================= M4：实心材质 ================= */
+
+/* --- 内容卡片 --- */
+.m4-card {
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+/* --- 输入框 --- */
+.m4-input,
+.form-row input[type="text"] {
+    background: #f5f6f8;
+    border: 1px solid #e2e5ea;
+    border-radius: 8px;
+    padding: 0 12px;
+    height: 34px;
+    font-size: 13px;
+    color: #2c3440;
+    outline: none;
+    transition: border-color 0.15s, background 0.15s;
+    font-family: inherit;
+    width: 100%;
+}
+
+.form-row input[type="text"]:focus {
+    background: #ffffff;
+    border-color: #3681f6;
+    box-shadow: 0 0 0 2px rgba(54, 129, 246, 0.15);
+}
+
+.form-row input[type="text"]::placeholder {
+    color: #9aa4b2;
+}
+
+/* --- 按钮（实心） --- */
+.m4-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 34px;
+    padding: 0 16px;
+    background: #eef0f4;
+    color: #2c3440;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+}
+
+.m4-btn:hover:not(:disabled) {
+    background: #e2e6ec;
+}
+
+.m4-btn:active:not(:disabled) {
+    background: #d6dbe3;
+}
+
+.m4-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.m4-btn--outline {
+    background: transparent;
+    border: 1px solid #d6dbe3;
+}
+
+.m4-btn--outline:hover:not(:disabled) {
+    background: #f5f6f8;
+    border-color: #c2c9d3;
+}
+
+.m4-btn--primary {
+    background: #3681f6;
+    color: #ffffff;
+}
+
+.m4-btn--primary:hover:not(:disabled) {
+    background: #2a70dd;
+}
+
+/* --- 下拉框 --- */
+.m4-select {
+    background: #f5f6f8;
+    border: 1px solid #e2e5ea;
+    border-radius: 8px;
+    padding: 0 30px 0 12px;
+    height: 34px;
+    font-size: 13px;
+    color: #2c3440;
+    outline: none;
+    cursor: pointer;
+    font-family: inherit;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23808080' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    width: 100%;
+}
+
+.m4-select:focus {
+    border-color: #3681f6;
+    background-color: #ffffff;
+}
+
+.m4-select--compact {
+    width: auto;
+    min-width: 76px;
+}
+
+/* --- 复选框 --- */
+.checkbox-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: #2c3440;
+}
+
+.checkbox-group input[type="checkbox"] {
+    display: none;
+}
+
+.checkbox-box {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #c2c9d3;
+    border-radius: 4px;
+    background: #ffffff;
+    transition: background 0.15s, border-color 0.15s;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.checkbox-group input[type="checkbox"]:checked + .checkbox-box {
+    background: #3681f6;
+    border-color: #3681f6;
+}
+
+.checkbox-group input[type="checkbox"]:checked + .checkbox-box::after {
+    content: '';
+    position: absolute;
+    left: 4.5px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #ffffff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+.checkbox-label {
+    color: #505864;
+}
+
+/* ================= M1：主操作按钮（液态玻璃占位） ================= */
+/*
+   .glass-button 的实际视觉由 WebGL 渲染。
+   这里只定义布局、尺寸、文字样式。
+   WebGL 会在 [data-liquid-glass] 元素下方绘制玻璃透镜。
+*/
+.glass-button {
+    position: relative;
+    height: 38px;
+    padding: 0 24px;
+    border-radius: 19px;
+    background: transparent;
+    color: #2c3440;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+
+    /* 让 WebGL canvas 接收指针 */
+    pointer-events: none;
+    /* WebGL 会读这个元素的 getBoundingClientRect */
+    z-index: 10;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+
+    /* ★ 加回边框 */
+    border: 1px double rgba(51, 51, 51, 0.08);
+
+    /* ★ 加回 6 层 inset 阴影（旧 .box 的完整阴影） */
+    box-shadow:
+        inset 2px -2px 1px -1px rgba(255, 255, 255, 0.9),
+        inset -2px 2px 1px -1px rgba(255, 255, 255, 0.9),
+        inset 6px -6px 1px -6px rgba(255, 255, 255, 0.55),
+        inset -6px 6px 1px -6px rgba(255, 255, 255, 0.55),
+        inset 0 0 2px rgba(0, 0, 0, 0.8),
+        0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.glass-button span {
+    position: relative;
+    z-index: 2;
+    /* ★ 文字加投影：让它从玻璃上"浮起来" */
+    filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.6))
+            drop-shadow(0 1px 2px rgba(0, 0, 0, 0.08));
+}
+
+/* ★ 45° 对角光带（旧 .box::after） */
+.glass-button::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    filter: blur(3px);
+    background: linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.15) 0%,
+        transparent 25%,
+        transparent 75%,
+        rgba(255, 255, 255, 0.15) 100%
+    );
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* ================= 弹窗 ================= */
+.dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: dialogFadeIn 0.2s ease;
+}
+
+.dialog-box {
+    background: #ffffff;
+    border-radius: 16px;
+    width: min(90vw, 400px);
+    padding: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    animation: dialogScaleIn 0.22s cubic-bezier(.34, 1.3, .64, 1);
+}
+
+.dialog-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #3681f6;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 16px;
+    margin-bottom: 4px;
+}
+
+.dialog-icon.error   { background: #e8544a; }
+.dialog-icon.warn    { background: #f0a13a; }
+
+.dialog-body h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1a2028;
+    margin-bottom: 6px;
+}
+
+.dialog-body p {
+    font-size: 13px;
+    color: #505864;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+@keyframes dialogFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes dialogScaleIn {
+    from { transform: scale(0.9); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+}
