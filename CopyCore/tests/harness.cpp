@@ -19,11 +19,13 @@ typedef int  (__cdecl *GetFailFn)(wchar_t*, int);
 typedef void (__cdecl *GetStatusFn)(int*,int*,int*,double*,long long*,long long*,
                                    int*,int*,int*,int*,int*,wchar_t*,int);
 typedef void (__cdecl *ToggleFn)(void);
+typedef void (__cdecl *SetIntFn)(int);
 
 static StartFn pStart; static StopFn pStop;
 static SetLimitFn pSetLimit; static SetVerifyFn pSetVerify;
 static GetFailFn pGetFail; static GetStatusFn pGetStatus;
 static ToggleFn pTogglePause;
+static SetIntFn pSetMode = NULL; static SetIntFn pSetStrategy = NULL;
 
 static void pth(wchar_t* out, size_t n, const wchar_t* fmt, ...) {
     va_list a; va_start(a, fmt);
@@ -119,6 +121,8 @@ int wmain(int argc, wchar_t** argv) {
     pGetFail = (GetFailFn)GetProcAddress(m,"CopyCore_GetFailList");
     pGetStatus = (GetStatusFn)GetProcAddress(m,"CopyCore_GetStatus");
     pTogglePause = (ToggleFn)GetProcAddress(m,"CopyCore_TogglePause");
+    pSetMode = (SetIntFn)GetProcAddress(m,"CopyCore_SetMode");
+    pSetStrategy = (SetIntFn)GetProcAddress(m,"CopyCore_SetStrategy");
     if (!pInit||!pStart||!pStop||!pSetLimit||!pSetVerify||!pGetFail||!pGetStatus) {
         wprintf(L"[FAIL] missing exports\n"); return 2;
     }
@@ -148,9 +152,14 @@ int wmain(int argc, wchar_t** argv) {
         wprintf(L"\n[empty] %ls\n", ok?L"PASS completed":L"FAIL hang/timeout");
         return ok?0:1;
     }
-    if (!wcscmp(test,L"mix") || !wcscmp(test,L"limit")) {
+    if (!wcscmp(test,L"mix") || !wcscmp(test,L"limit") ||
+        !wcscmp(test,L"mix1") || !wcscmp(test,L"mix2") || !wcscmp(test,L"mix3")) {
+        if (!wcscmp(test,L"mix1") && pSetStrategy) pSetStrategy(1);
+        if (!wcscmp(test,L"mix2") && pSetStrategy) pSetStrategy(2);
+        if (!wcscmp(test,L"mix3") && pSetStrategy) pSetStrategy(3);
         CreateDirectoryW(src,0);
-        if (!wcscmp(test,L"mix")) {
+        int isMix = (!wcscmp(test,L"mix") || !wcscmp(test,L"mix1") || !wcscmp(test,L"mix2") || !wcscmp(test,L"mix3"));
+        if (isMix) {
             // 3000 小文件 + 若干空目录
             for (int i=0;i<30;i++) {
                 wchar_t sub[1024];
@@ -178,7 +187,7 @@ int wmain(int argc, wchar_t** argv) {
                 MakeFile(f, 300LL*1024*1024, (unsigned long long)(700+i));
             }
         }
-        pSetVerify(!wcscmp(test,L"mix")?1:0);
+        pSetVerify(isMix?1:0);
         pSetLimit(!wcscmp(test,L"limit")?30*1024:0); // 30 MB/s
         double el=0, avg=0; int failed=0;
         int ok = RunCopy(src,dst, !wcscmp(test,L"limit")?60:120, &el,&avg,&failed);
@@ -269,6 +278,57 @@ int wmain(int argc, wchar_t** argv) {
         int ok = pausedDuringPause && (frozenDelta < 4*1024*1024) && !copying;
         wprintf(L"[pause] %ls\n", ok?L"PASS":L"FAIL");
         return ok?0:1;
+    }
+    if (!wcscmp(test,L"edge") || !wcscmp(test,L"edge5") || !wcscmp(test,L"edge3")) {
+        // 边界尺寸：0/1/扇区边界/1MB边界/几 MB；含只读、隐藏、只读+隐藏
+        CreateDirectoryW(src,0);
+        wchar_t dir[1024];
+        pth(dir,1024,L"%ls\\edge",src);
+        CreateDirectoryW(dir,0);
+        static const long long sizes[] = {
+            0,1,2,3,7,511,512,513,4095,4096,4097,8191,8192,8193,
+            10000,12287,12288,12289,65535,65536,65537,
+            1048575,1048576,1048577,1048576+4096,1048576+4097,
+            2097152,4194304,5242880,10485760,
+            33554432,33554432+100,35651584+123
+        };
+        int n = (int)(sizeof(sizes)/sizeof(sizes[0]));
+        for (int i=0;i<n;i++) {
+            wchar_t f[1024];
+            pth(f,1024,L"%ls\\s%02d_%lld.bin",dir,i,sizes[i]);
+            MakeFile(f, sizes[i], (unsigned long long)i*131+7);
+        }
+        // 特殊属性文件
+        wchar_t sp[1024];
+        pth(sp,1024,L"%ls\\readonly.bin",dir); MakeFile(sp, 12345, 42);
+        SetFileAttributesW(sp, FILE_ATTRIBUTE_READONLY);
+        pth(sp,1024,L"%ls\\hidden.bin",dir); MakeFile(sp, 67890, 43);
+        SetFileAttributesW(sp, FILE_ATTRIBUTE_HIDDEN);
+        pth(sp,1024,L"%ls\\rohidden.bin",dir); MakeFile(sp, 16777216, 44);
+        SetFileAttributesW(sp, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN);
+
+        pSetVerify(1);
+        if (!wcscmp(test,L"edge5") && pSetMode) pSetMode(5); // 强制 SSD->HDD（src 缓冲/dst NO_BUFFERING）
+        if (!wcscmp(test,L"edge3") && pSetMode) pSetMode(3); // HDD->HDD（纯缓冲）
+        double el=0,avg=0; int failed=0;
+        int ok = RunCopy(src,dst,120,&el,&avg,&failed);
+        int bad=0;
+        for (int i=0;i<n;i++) {
+            wchar_t a[1024], b[1024];
+            pth(a,1024,L"%ls\\s%02d_%lld.bin",dir,i,sizes[i]);
+            pth(b,1024,L"%ls\\src\\edge\\s%02d_%lld.bin",dst,i,sizes[i]);
+            unsigned long long h1=HashFile(a), h2=HashFile(b);
+            if (h1!=h2) { wprintf(L"  size %lld hash mismatch %016llx vs %016llx\n",sizes[i],h1,h2); bad++; }
+        }
+        static const wchar_t* names[] = { L"readonly.bin", L"hidden.bin", L"rohidden.bin" };
+        for (int i=0;i<3;i++) {
+            wchar_t a[1024], b[1024];
+            pth(a,1024,L"%ls\\%ls",dir,names[i]);
+            pth(b,1024,L"%ls\\src\\edge\\%ls",dst,names[i]);
+            if (HashFile(a)!=HashFile(b)) { wprintf(L"  %ls mismatch\n",names[i]); bad++; }
+        }
+        wprintf(L"[edge] %ls (failed %d, hash mismatch %d)\n", (ok&&bad==0&&failed==0)?L"PASS":L"FAIL",failed,bad);
+        return (ok&&bad==0&&failed==0)?0:1;
     }
     wprintf(L"unknown test\n");
     return 2;
