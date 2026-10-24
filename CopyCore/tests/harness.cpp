@@ -56,20 +56,32 @@ static unsigned long long HashFile(const wchar_t* path) {
     return h64;
 }
 
-static void MakeFile(const wchar_t* path, long long bytes, unsigned long long seed) {
+static int MakeFile(const wchar_t* path, long long bytes, unsigned long long seed) {
     HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, 0, CREATE_ALWAYS,
                            FILE_FLAG_SEQUENTIAL_SCAN, 0);
-    if (h == INVALID_HANDLE_VALUE) { wprintf(L"[FAIL] cannot create %ls err=%lu\n", path, GetLastError()); return; }
+    if (h == INVALID_HANDLE_VALUE) { wprintf(L"[FAIL] cannot create %ls err=%lu\n", path, GetLastError()); return 0; }
     static unsigned char buf[1 << 20];
     long long left = bytes;
     long long off = 0;
     while (left > 0) {
         DWORD n = (DWORD)(left > (1<<20) ? (1<<20) : left);
         FillBuf(buf, n, seed + (unsigned long long)(off >> 20));
-        DWORD wr; WriteFile(h, buf, n, &wr, 0);
+        DWORD wr;
+        if (!WriteFile(h, buf, n, &wr, 0) || (long long)wr != n) {
+            wprintf(L"[FAIL] short write %ls at %lld err=%lu (disk full?)\n", path, off, GetLastError());
+            CloseHandle(h);
+            return 0;
+        }
         left -= n; off += n;
     }
     CloseHandle(h);
+    LARGE_INTEGER sz;
+    h = CreateFileW(path, 0, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+    if (h == INVALID_HANDLE_VALUE) { wprintf(L"[FAIL] reopen %ls err=%lu\n", path, GetLastError()); return 0; }
+    int ok = GetFileSizeEx(h, &sz) && sz.QuadPart == bytes;
+    if (!ok) wprintf(L"[FAIL] size mismatch %ls: got %lld want %lld (disk full?)\n", path, sz.QuadPart, bytes);
+    CloseHandle(h);
+    return ok;
 }
 
 // 运行一次复制并轮询，超时秒数；返回是否正常完成
@@ -184,7 +196,10 @@ int wmain(int argc, wchar_t** argv) {
             wchar_t f[1024];
             for (int i=0;i<2;i++) {
                 pth(f,1024,L"%ls\\huge%02d.bin",src,i);
-                MakeFile(f, 300LL*1024*1024, (unsigned long long)(700+i));
+                if (!MakeFile(f, 300LL*1024*1024, (unsigned long long)(700+i))) {
+                    wprintf(L"[limit] FAIL setup: 源文件创建失败，结果无效（磁盘满？）\n");
+                    return 1;
+                }
             }
         }
         pSetVerify(isMix?1:0);
@@ -193,9 +208,11 @@ int wmain(int argc, wchar_t** argv) {
         int ok = RunCopy(src,dst, !wcscmp(test,L"limit")?60:120, &el,&avg,&failed);
         if (!wcscmp(test,L"limit")) {
             // 聚合限速：30MB/s 设定，600MB 理论 ~20s；多线程超标会 <15s
-            wprintf(L"[limit] avg %.1f MB/s (limit 30) elapsed %.2fs (expect ~20s)\n", avg, el);
-            ok = ok && (avg < 60.0); // 超过 60 视为限速失效（允许 2x 内突发）
-            wprintf(L"[limit] %ls\n", ok?L"PASS limited":L"FAIL over-limit");
+            wprintf(L"[limit] avg %.1f MB/s (limit 30) elapsed %.2fs (expect ~20s) failed %d\n", avg, el, failed);
+            // 必须同时满足：正常完成、0 失败、确实复制了数据(avg>0)、
+            // 耗时 >=10s（瞬间完成说明限速/复制根本没发生，杜绝磁盘满假 PASS）、未超速
+            ok = ok && (failed==0) && (avg > 0.0) && (el >= 10.0) && (avg < 60.0);
+            wprintf(L"[limit] %ls\n", ok?L"PASS limited":L"FAIL over-limit-or-invalid");
         } else {
             // 哈希校验（抽查 + 大文件全量）
             int bad = 0;
@@ -234,9 +251,18 @@ int wmain(int argc, wchar_t** argv) {
         CreateDirectoryW(src,0);
         wchar_t f[1024];
         pth(f,1024,L"%ls\\big.bin",src);
-        MakeFile(f, 800LL*1024*1024, 555);
+        if (!MakeFile(f, 800LL*1024*1024, 555)) {
+            wprintf(L"[stop] FAIL setup: 源文件创建失败，结果无效（磁盘满？）\n");
+            return 1;
+        }
         if (!pStart(src,dst)) { wprintf(L"[FAIL] Start\n"); return 1; }
         Sleep(1000);
+        {
+            int cp0=0,ps0=0,pct0=0,cf0=0,tf0=0,ff0=0,sc0=0,sd0=0; double sp0=0;
+            long long cb0=0,tb0=0; wchar_t tx0[256];
+            pGetStatus(&cp0,&ps0,&pct0,&sp0,&cb0,&tb0,&cf0,&tf0,&ff0,&sc0,&sd0,tx0,256);
+            if (!cp0) { wprintf(L"[stop] FAIL setup: 复制 1s 内已结束，终止测试无效（文件太小/磁盘异常）\n"); return 1; }
+        }
         ULONGLONG t0=GetTickCount64();
         pStop();
         int ok=0;
@@ -255,9 +281,18 @@ int wmain(int argc, wchar_t** argv) {
         CreateDirectoryW(src,0);
         wchar_t f[1024];
         pth(f,1024,L"%ls\\big.bin",src);
-        MakeFile(f, 800LL*1024*1024, 666);
+        if (!MakeFile(f, 800LL*1024*1024, 666)) {
+            wprintf(L"[pause] FAIL setup: 源文件创建失败，结果无效（磁盘满？）\n");
+            return 1;
+        }
         if (!pStart(src,dst)) { wprintf(L"[FAIL] Start\n"); return 1; }
         Sleep(1000);
+        {
+            int cp0=0,ps0=0,pct0=0,cf0=0,tf0=0,ff0=0,sc0=0,sd0=0; double sp0=0;
+            long long cb0=0,tb0=0; wchar_t tx0[256];
+            pGetStatus(&cp0,&ps0,&pct0,&sp0,&cb0,&tb0,&cf0,&tf0,&ff0,&sc0,&sd0,tx0,256);
+            if (!cp0) { wprintf(L"[pause] FAIL setup: 复制 1s 内已结束，暂停测试无效（文件太小/磁盘异常）\n"); return 1; }
+        }
         pTogglePause();
         Sleep(2000);
         long long cbA=0, tb=0;
