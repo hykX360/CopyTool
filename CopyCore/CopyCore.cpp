@@ -13,11 +13,12 @@
 
 #include "CopyCore.h"
 
-#define MAX_WORKER_THREADS 32
+#include "rpmalloc.h"
+#include "rpnew.h"
 
-// ------------------------------------------------------------
-// 枚举 / 配置（与原 CopyTool.cpp 完全一致）
-// ------------------------------------------------------------
+#define MAX_WORKER_THREADS 32
+#define LARGE_FILE_THRESHOLD (4 * 1024 * 1024)
+
 enum CopyMode {
     MODE_AUTO, MODE_BALANCED, MODE_SSD_SSD, MODE_HDD_HDD, MODE_HDD_SSD,
     MODE_SSD_HDD, MODE_SSD_UFD, MODE_UFD_SSD, MODE_HDD_UFD, MODE_UFD_HDD,
@@ -43,17 +44,17 @@ typedef struct {
 
 static const ModeConfig g_ModeConfigs[] = {
     {L"自动识别", L"自动", 0, 0, 0, 0, TRUE, 5},
-    {L"均衡模式", L"均衡", 32, 32*1024*1024, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 5},
-    {L"SSD→SSD", L"SSD→SSD", 32, 32*1024*1024, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 10},
-    {L"HDD→HDD", L"HDD→HDD", 4, 32*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 4},
-    {L"HDD→SSD", L"HDD→SSD", 16, 32*1024*1024, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 7},
-    {L"SSD→HDD", L"SSD→HDD", 8, 32*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 6},
-    {L"SSD→UFD", L"SSD→UFD", 2, 4*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING, FALSE, 3},
-    {L"UFD→SSD", L"UFD→SSD", 4, 16*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 6},
-    {L"HDD→UFD", L"HDD→UFD", 2, 4*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING, FALSE, 2},
-    {L"UFD→HDD", L"UFD→HDD", 2, 8*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 3},
-    {L"UFD→UFD", L"UFD→UFD", 1, 2*1024*1024, 0, FILE_FLAG_NO_BUFFERING, FALSE, 1},
-    {L"极速狂飙", L"极速", 32, 32*1024*1024, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 10}
+    {L"均衡模式", L"均衡", 32, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 5},
+    {L"SSD→SSD", L"SSD→SSD", 32, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 10},
+    {L"HDD→HDD", L"HDD→HDD", 4, 4*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 4},
+    {L"HDD→SSD", L"HDD→SSD", 8, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 7},
+    {L"SSD→HDD", L"SSD→HDD", 8, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 6},
+    {L"SSD→UFD", L"SSD→UFD", 2, 1*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, FALSE, 3},
+    {L"UFD→SSD", L"UFD→SSD", 4, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 6},
+    {L"HDD→UFD", L"HDD→UFD", 2, 1*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, FALSE, 2},
+    {L"UFD→HDD", L"UFD→HDD", 2, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 3},
+    {L"UFD→UFD", L"UFD→UFD", 1, 1*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, FALSE, 1},
+    {L"极速狂飙", L"极速", 32, 2*1024*1024, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_SEQUENTIAL_SCAN, TRUE, 10}
 };
 
 typedef struct {
@@ -67,16 +68,12 @@ typedef struct {
 
 static const StrategyConfig g_strategyConfigs[] = {
     {0, 0, 0, FALSE, FALSE, L"智能检测"},
-    {16, 16*1024*1024, 4*1024*1024, TRUE, TRUE, L"小文件优化"},
-    {32, 64*1024*1024, 1*1024*1024, TRUE, TRUE, L"大文件优化"},
-    {32, 32*1024*1024, 4*1024*1024, TRUE, TRUE, L"平衡模式"}
+    {16, 2*1024*1024, LARGE_FILE_THRESHOLD, FALSE, TRUE, L"小文件优化"},
+    {32, 4*1024*1024, 1*1024*1024, FALSE, TRUE, L"大文件优化"},
+    {16, 2*1024*1024, LARGE_FILE_THRESHOLD, FALSE, TRUE, L"平衡模式"}
 };
 
-// ------------------------------------------------------------
-// 多语言（与原表一致）
-// ------------------------------------------------------------
 static int currentLang = 0;
-static const wchar_t* langNames[] = {L"简体中文", L"繁體中文", L"English", L"한국어", L"日本語"};
 
 typedef struct {
     const char* id;
@@ -135,7 +132,7 @@ static const LangEntry g_LangTable[] = {
     {"dialog_error_read", L"源文件读取失败", L"來源檔案讀取失敗", L"Failed to read source file", L"원본 파일 읽기 실패", L"ソースファイルの読み取りに失敗しました"},
     {"dialog_error_write_file", L"目标文件写入失败", L"目標檔案寫入失敗", L"Failed to write target file", L"대상 파일 쓰기 실패", L"先ファイルの書き込みに失敗しました"},
     {"dialog_error_verify", L"文件缺失！将重新复制", L"檔案缺失！將重新複製", L"File missing! Recopying", L"파일 누락! 다시 복사", L"ファイルが不足しています！再コピーします"},
-    {"dialog_error_thread", L"系统资源不足", L"系統資源不足", L"Not enough system resources", L"시스템 리소스가 부족", L"システムリソース가 부족"},
+    {"dialog_error_thread", L"系统资源不足", L"系統資源不足", L"Not enough system resources", L"시스템 리소스가 부족", L"システムリソースが不足"},
     {"dialog_error_memory", L"内存不足", L"記憶體不足", L"Not enough memory", L"메모리 부족", L"メモリが不足しています"},
     {"dialog_ok", L"确定", L"確定", L"OK", L"확인", L"OK"},
     {"strategy_auto", L"智能检测", L"智慧偵測", L"Auto Detect", L"자동 감지", L"自動検出"},
@@ -170,12 +167,8 @@ static const wchar_t* GetText(const char* id) {
     return L"";
 }
 
-// ------------------------------------------------------------
-// 全局状态
-// ------------------------------------------------------------
 static int g_strategy = STRATEGY_AUTO;
-static size_t g_largeFileThreshold = 1 * 1024 * 1024;
-static BOOL g_wasAutoStrategy = FALSE;
+static size_t g_largeFileThreshold = LARGE_FILE_THRESHOLD;
 
 static CRITICAL_SECTION cs;
 static BOOL g_csInited = FALSE;
@@ -184,7 +177,10 @@ static int progressValue = 0, isCopying = 0;
 static int lastProgress = 0;
 static volatile int isPaused = 0, stopRequested = 0;
 static HANDLE hCopyThread = NULL;
+static HANDLE g_hIOCP = NULL;
 static HANDLE hWakeEvent = NULL;
+static HANDLE hStopEvent = NULL;
+static HANDLE hScanDoneEvent = NULL;
 
 static int speedLimitKB = 0;
 static int enableVerify = 0;
@@ -194,16 +190,11 @@ static wchar_t srcPath[MAX_PATH] = L"";
 static wchar_t dstPath[MAX_PATH] = L"";
 static wchar_t statusText[128] = L"准备就绪";
 
-static int g_workerThreads = 8;
-static size_t g_bufferSize = 32 * 1024 * 1024;
+static int g_workerThreads = 16;
+static size_t g_bufferSize = 2 * 1024 * 1024;
 static DWORD g_srcFlags = FILE_FLAG_SEQUENTIAL_SCAN;
 static DWORD g_dstFlags = FILE_FLAG_SEQUENTIAL_SCAN;
 static BOOL g_preallocate = TRUE;
-static int g_prescanSmallCount = 0, g_prescanLargeCount = 0;
-static long long g_prescanSmallBytes = 0, g_prescanLargeBytes = 0;
-static BOOL g_countOnly = FALSE;
-static HANDLE hLargeFileSem = NULL;
-static HANDLE hStopEvent = NULL;
 static BOOL g_destIsFresh = FALSE;
 
 typedef struct FileNode {
@@ -212,6 +203,7 @@ typedef struct FileNode {
     long long fsize;
     DWORD fattrs;
     FILETIME fwriteTime;
+    FILETIME fcreateTime;
     struct FileNode* next;
 } FileNode;
 
@@ -224,7 +216,9 @@ static long long verifiedBytes = 0;
 static int verifiedFiles = 0;
 static int failedVerifyFiles = 0;
 static long long totalBytes = 0;
-static long long copiedBytes = 0;
+static char _pad_total_copied[64];
+static volatile long long copiedBytes = 0;
+static char _pad_copied_verified[64];
 static int totalFiles = 0;
 static int copiedFiles = 0;
 static int failedFiles = 0;
@@ -233,15 +227,8 @@ static wchar_t g_failList[MAX_FAIL_LIST][MAX_PATH] = {0};
 static DWORD g_failErrors[MAX_FAIL_LIST] = {0};
 static int g_failCount = 0;
 
-typedef BOOL (WINAPI *SetThreadIoPriority_t)(HANDLE, int);
-static SetThreadIoPriority_t g_pSetThreadIoPriority = NULL;
-static BOOL g_ioPriorityInited = FALSE;
-static void InitIoPriority() {
-    if (!g_ioPriorityInited) {
-        g_pSetThreadIoPriority = (SetThreadIoPriority_t)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadIoPriority");
-        g_ioPriorityInited = TRUE;
-    }
-}
+static BOOL g_useIOCP = FALSE;
+
 static int filesScanned = 0;
 static int scanDone = 0;
 static HANDLE hScanThread = NULL;
@@ -251,15 +238,19 @@ static double currentSpeedMB = 0.0;
 static ULONGLONG lastSpeedTime = 0;
 static long long lastSpeedBytes = 0;
 
-static __thread char* tls_copyBuf = NULL;
-static __thread size_t tls_copyBufSize = 0;
+// 线程 I/O 优先级提升（Win8+ kernel32）：扫描线程 3(High)，复制 worker 4(Critical)。
+// 空闲机器上无收益；系统忙时让本工具的 I/O 优先调度，避免被其他进程饿死。
+// 动态获取，旧系统无此 API 时自动降级为普通优先级。
+typedef BOOL (WINAPI *SetThreadIoPriority_t)(HANDLE, int);
+static SetThreadIoPriority_t g_pSetThreadIoPriority = NULL;
+static BOOL g_ioPriorityInited = FALSE;
+static void InitIoPriority() {
+    if (!g_ioPriorityInited) {
+        g_pSetThreadIoPriority = (SetThreadIoPriority_t)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadIoPriority");
+        g_ioPriorityInited = TRUE;
+    }
+}
 
-// 手动复位：扫描线程结束时置位，worker 空闲等待必须同时等它，
-// 否则空目录/文件数少于线程数时 worker 会永久挂在 hWakeEvent 上。
-static HANDLE hScanDoneEvent = NULL;
-
-// 全局聚合限速器（漏桶，跨所有 worker 线程，cs 保护）。
-// 旧实现每线程各自一个 1 秒窗口，N 线程实际超速 N 倍。
 static ULONGLONG g_limLastTick = 0;
 static long long g_limDebtBytes = 0;
 static void RateLimitWait(long long bytes) {
@@ -276,49 +267,21 @@ static void RateLimitWait(long long bytes) {
         g_limDebtBytes -= drained;
         if (g_limDebtBytes < 0) g_limDebtBytes = 0;
         g_limLastTick = now;
-        // 桶已排空（debt==0）时直接放行——单块大于 1 秒额度（如 32MB 块配 30MB/s）
-        // 也必须能通过，否则会陷入永远等不到额度的死循环。
         if (g_limDebtBytes == 0 || g_limDebtBytes + bytes <= limitBytesPerSec) {
             g_limDebtBytes += bytes;
             LeaveCriticalSection(&cs);
             return;
         }
-        // 桶满：按超出量计算需要漏出的时间，让出后重试
         long long excess = g_limDebtBytes + bytes - limitBytesPerSec;
         sleepMs = (excess * 1000) / limitBytesPerSec;
         if (sleepMs < 1) sleepMs = 1;
-        if (sleepMs > 100) sleepMs = 100;
+        if (sleepMs > 10) sleepMs = 10;
         LeaveCriticalSection(&cs);
         Sleep((DWORD)sleepMs);
-        // 限速等待期间同时响应暂停
         while (isPaused && !stopRequested) Sleep(10);
     }
 }
 
-// 大文件缓冲池：按大文件并发上限预分配，总量封顶 256MB；
-// 小文件走 CopyFileEx 不占缓冲；分配失败时回退每线程 TLS 缓冲。
-static unsigned char* g_bufPool = NULL;
-static size_t g_bufPoolSlotSize = 0;
-static int g_bufPoolCount = 0;
-static int g_bufFreeSlots[64] = {0};
-static int g_bufFreeCount = 0;
-static int BufPoolAcquire(void) {
-    if (!g_bufPool) return -1;
-    EnterCriticalSection(&cs);
-    int slot = g_bufFreeSlots[--g_bufFreeCount];
-    LeaveCriticalSection(&cs);
-    return slot;
-}
-static void BufPoolRelease(int slot) {
-    if (slot < 0) return;
-    EnterCriticalSection(&cs);
-    g_bufFreeSlots[g_bufFreeCount++] = slot;
-    LeaveCriticalSection(&cs);
-}
-
-// ------------------------------------------------------------
-// 目录创建缓存
-// ------------------------------------------------------------
 #define DIR_CACHE_BUCKETS 4096
 static wchar_t g_dirCache[DIR_CACHE_BUCKETS][MAX_PATH];
 static volatile LONG g_dirCacheUsed[DIR_CACHE_BUCKETS];
@@ -350,9 +313,6 @@ static void DirCache_Add(const wchar_t* dir) {
     }
 }
 
-// ------------------------------------------------------------
-// 队列
-// ------------------------------------------------------------
 static void EnqueueFileNode(FileNode* node) {
     node->next = NULL;
     if (queueTail) { queueTail->next = node; queueTail = node; }
@@ -382,22 +342,14 @@ static void ClearVerifyQueue() {
     verifyHead = verifyTail = NULL;
 }
 
-// ------------------------------------------------------------
-// 前向声明
-// ------------------------------------------------------------
-DWORD WINAPI WorkerThreadProc(LPVOID lpParam);
+DWORD WINAPI EventWorkerThreadProc(LPVOID lpParam);
+DWORD WINAPI IOCPWorkerThreadProc(LPVOID lpParam);
 DWORD WINAPI VerifyThreadProc(LPVOID lpParam);
-BOOL CopySingleFile(const wchar_t* src, const wchar_t* dst, long long fsize, DWORD fattrs, const FILETIME* fwriteTime);
+BOOL CopySingleFile(const wchar_t* src, const wchar_t* dst, long long fsize, DWORD fattrs, const FILETIME* fwriteTime, const FILETIME* fcreateTime);
 BOOL VerifyFileCopy(const wchar_t* src, const wchar_t* dst);
-void CreateDirectoriesRecursive(const wchar_t* path);
-int CheckImpossibleTask(const wchar_t* src, const wchar_t* dst);
 
-// 原 UI 层 ShowError：DLL 无窗口，错误已通过失败列表/返回值体现
 static void ShowError(const wchar_t* /*id*/) {}
 
-// ------------------------------------------------------------
-// 磁盘类型识别 / 模式选择
-// ------------------------------------------------------------
 DiskType DetectDriveType(const wchar_t* path) {
     wchar_t root[8] = {0};
     root[0] = path[0]; root[1] = L':'; root[2] = L'\\'; root[3] = L'\0';
@@ -462,13 +414,10 @@ void ApplyModeConfig(int mode) {
             g_dstFlags |= FILE_FLAG_NO_BUFFERING;
         }
     } else {
-        g_largeFileThreshold = 1 * 1024 * 1024;
+        g_largeFileThreshold = LARGE_FILE_THRESHOLD;
     }
 }
 
-// ------------------------------------------------------------
-// 扫描
-// ------------------------------------------------------------
 void ScanDirectory(const wchar_t* path, const wchar_t* baseSrc, size_t baseSrcLen, const wchar_t* baseDst) {
     wchar_t sp[MAX_PATH];
     WIN32_FIND_DATAW fd;
@@ -477,7 +426,6 @@ void ScanDirectory(const wchar_t* path, const wchar_t* baseSrc, size_t baseSrcLe
     if (h == INVALID_HANDLE_VALUE) return;
     do {
         if (stopRequested) break;
-        if (g_countOnly && (g_prescanSmallCount + g_prescanLargeCount) >= 3000) break;
         if (fd.cFileName[0] == L'.' && (fd.cFileName[1] == L'\0' || (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) continue;
         wchar_t src[MAX_PATH], dst[MAX_PATH];
         StringCchPrintfW(src, ARRAYSIZE(src), L"%s\\%s", path, fd.cFileName);
@@ -486,47 +434,56 @@ void ScanDirectory(const wchar_t* path, const wchar_t* baseSrc, size_t baseSrcLe
         StringCchPrintfW(dst, ARRAYSIZE(dst), L"%s%s", baseDst, relStart);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
-            if (!g_countOnly) CreateDirectoryW(dst, NULL);
-            if (!(g_countOnly && (g_prescanSmallCount + g_prescanLargeCount) >= 3000))
-                ScanDirectory(src, baseSrc, baseSrcLen, baseDst);
+            CreateDirectoryW(dst, NULL);
+            ScanDirectory(src, baseSrc, baseSrcLen, baseDst);
+            if (stopRequested) break;
         } else {
             long long fsize = (long long)fd.nFileSizeHigh << 32 | fd.nFileSizeLow;
-            if (g_countOnly) {
-                if (fsize < 1024 * 1024) { g_prescanSmallCount++; g_prescanSmallBytes += fsize; }
-                else { g_prescanLargeCount++; g_prescanLargeBytes += fsize; }
-            } else {
-                FileNode* node = (FileNode*)malloc(sizeof(FileNode));
-                FileNode* vnode = NULL;
-                if (node) {
-                    wcscpy(node->src, src); wcscpy(node->dst, dst);
-                    node->fsize = fsize; node->fattrs = fd.dwFileAttributes;
-                    node->fwriteTime = fd.ftLastWriteTime;
+            FileNode* node = (FileNode*)malloc(sizeof(FileNode));
+            FileNode* vnode = NULL;
+            if (node) {
+                wcscpy(node->src, src); wcscpy(node->dst, dst);
+                node->fsize = fsize; node->fattrs = fd.dwFileAttributes;
+                node->fwriteTime = fd.ftLastWriteTime;
+                node->fcreateTime = fd.ftCreationTime;
+                node->next = NULL;
+            }
+            if (enableVerify) {
+                vnode = (FileNode*)malloc(sizeof(FileNode));
+                if (vnode) {
+                    wcscpy(vnode->src, src); wcscpy(vnode->dst, dst);
+                    vnode->fsize = fsize; vnode->fattrs = fd.dwFileAttributes;
+                    vnode->fwriteTime = fd.ftLastWriteTime;
+                    vnode->fcreateTime = fd.ftCreationTime;
+                    vnode->next = NULL;
                 }
-                if (enableVerify) {
-                    vnode = (FileNode*)malloc(sizeof(FileNode));
-                    if (vnode) {
-                        wcscpy(vnode->src, src); wcscpy(vnode->dst, dst);
-                        vnode->fsize = fsize; vnode->fattrs = fd.dwFileAttributes;
-                        vnode->fwriteTime = fd.ftLastWriteTime;
-                    }
-                }
+            }
+            if (!stopRequested && node) {
+                FileNode* toPost = NULL;
+                BOOL needWake = FALSE;
                 EnterCriticalSection(&cs);
-                if (!stopRequested && node) {
+                filesScanned++; totalBytes += fsize; totalFiles++;
+                if (vnode) {
+                    if (verifyTail) { verifyTail->next = vnode; verifyTail = vnode; }
+                    else { verifyHead = verifyTail = vnode; }
+                    vnode = NULL;
+                }
+                if (g_useIOCP) {
+                    toPost = node;
+                    node = NULL;
+                } else {
                     EnqueueFileNode(node);
                     node = NULL;
-                    if (vnode) {
-                        vnode->next = NULL;
-                        if (verifyTail) { verifyTail->next = vnode; verifyTail = vnode; }
-                        else { verifyHead = verifyTail = vnode; }
-                        vnode = NULL;
-                    }
-                    filesScanned++; totalBytes += fsize; totalFiles++;
+                    needWake = TRUE;
                 }
                 LeaveCriticalSection(&cs);
-                if (hWakeEvent) SetEvent(hWakeEvent);
-                if (node) free(node);
-                if (vnode) free(vnode);
+                if (toPost) {
+                    if (!PostQueuedCompletionStatus(g_hIOCP, 0, 0, (LPOVERLAPPED)toPost)) free(toPost);
+                }
+                if (needWake && hWakeEvent) SetEvent(hWakeEvent);
             }
+            if (node) free(node);
+            if (vnode) free(vnode);
         }
     } while (FindNextFileW(h, &fd) && !stopRequested);
     FindClose(h);
@@ -558,14 +515,12 @@ DWORD WINAPI ScanThreadProc(LPVOID lpParam) {
     EnterCriticalSection(&cs);
     scanDone = 1;
     LeaveCriticalSection(&cs);
-    // 广播扫描结束：让所有在 hWakeEvent 上等待的 worker 重新检查队列并退出。
     if (hScanDoneEvent) SetEvent(hScanDoneEvent);
+    if (hWakeEvent) { for (int i = 0; i < MAX_WORKER_THREADS; i++) SetEvent(hWakeEvent); }
+    rpmalloc_thread_finalize();
     return 0;
 }
 
-// ------------------------------------------------------------
-// 复制主流程
-// ------------------------------------------------------------
 DWORD WINAPI CopyThreadProc(LPVOID lpParam) {
     wchar_t* pPaths = (wchar_t*)lpParam;
     totalBytes = 0; totalFiles = 0; copiedBytes = 0; copiedFiles = 0; failedFiles = 0;
@@ -575,42 +530,10 @@ DWORD WINAPI CopyThreadProc(LPVOID lpParam) {
     ClearVerifyQueue();
     filesScanned = 0; scanDone = 0;
     ClearQueue();
-    if (g_strategy == STRATEGY_AUTO) {
-        wchar_t* srcRoot = pPaths;
-        wchar_t* dstRoot = pPaths + MAX_PATH;
-        size_t srcLen = wcslen(srcRoot);
-        if (srcLen > 0 && srcRoot[srcLen-1] == L'\\') srcRoot[srcLen-1] = L'\0';
-        wchar_t folder[MAX_PATH];
-        wchar_t* p = wcsrchr(srcRoot, L'\\');
-        if (p && *(p+1) != L'\0') wcscpy(folder, p + 1);
-        else wcscpy(folder, srcRoot);
-        wchar_t dstRootFixed[MAX_PATH];
-        wcscpy(dstRootFixed, dstRoot);
-        size_t len = wcslen(dstRootFixed);
-        if (len > 0 && dstRootFixed[len-1] != L'\\') {
-            StringCchPrintfW(dstRootFixed, ARRAYSIZE(dstRootFixed), L"%s\\", dstRoot);
-        }
-        wchar_t finalDst[MAX_PATH];
-        StringCchPrintfW(finalDst, ARRAYSIZE(finalDst), L"%s%s\\", dstRootFixed, folder);
-        g_prescanSmallCount = 0; g_prescanLargeCount = 0;
-        g_prescanSmallBytes = 0; g_prescanLargeBytes = 0;
-        g_countOnly = TRUE;
-        ScanDirectory(srcRoot, srcRoot, wcslen(srcRoot), finalDst);
-        g_countOnly = FALSE;
-        int totalCnt = g_prescanSmallCount + g_prescanLargeCount;
-        long long totalPrescanBytes = g_prescanSmallBytes + g_prescanLargeBytes;
-        if (totalCnt > 0 && totalPrescanBytes > 0) {
-            double smallCntRatio = (double)g_prescanSmallCount / totalCnt;
-            double smallByteRatio = (double)g_prescanSmallBytes / totalPrescanBytes;
-            double largeCntRatio = (double)g_prescanLargeCount / totalCnt;
-            double largeByteRatio = (double)g_prescanLargeBytes / totalPrescanBytes;
-            if (smallCntRatio > 0.7 && smallByteRatio < 0.3) g_strategy = STRATEGY_SMALL;
-            else if (largeCntRatio > 0.3 && largeByteRatio > 0.7) g_strategy = STRATEGY_LARGE;
-            else g_strategy = STRATEGY_BALANCED;
-        } else { g_strategy = STRATEGY_BALANCED; }
-        g_wasAutoStrategy = TRUE;
-    }
+    g_useIOCP = FALSE;
+
     ApplyModeConfig(currentMode);
+
     wchar_t srcVol[MAX_PATH] = L"", dstVol[MAX_PATH] = L"";
     wcsncpy_s(srcVol, MAX_PATH, pPaths, 3); srcVol[2] = L'\\'; srcVol[3] = L'\0';
     wcsncpy_s(dstVol, MAX_PATH, pPaths + MAX_PATH, 3); dstVol[2] = L'\\'; dstVol[3] = L'\0';
@@ -624,15 +547,14 @@ DWORD WINAPI CopyThreadProc(LPVOID lpParam) {
     GetSystemInfo(&si);
     int workerCount = g_workerThreads > 0 ? g_workerThreads : si.dwNumberOfProcessors * 2;
     size_t tunedBuffer = g_bufferSize;
-    
-if (sameDisk) {
-    if (srcType == DISK_HDD || dstType == DISK_HDD) {
-        if (workerCount > 4) workerCount = 4;
-    } else {
-        if (workerCount > 16) workerCount = 16;
-    }
-}
-    else if (srcType == DISK_NETWORK || dstType == DISK_NETWORK) {
+
+    if (sameDisk) {
+        if (srcType == DISK_HDD || dstType == DISK_HDD) {
+            if (workerCount > 4) workerCount = 4;
+        } else {
+            if (workerCount > 16) workerCount = 16;
+        }
+    } else if (srcType == DISK_NETWORK || dstType == DISK_NETWORK) {
         if (workerCount > 8) workerCount = 8;
         if (tunedBuffer == 0 || tunedBuffer > 64 * 1024 * 1024) tunedBuffer = 64 * 1024 * 1024;
     } else if (srcType == DISK_USB || dstType == DISK_USB) {
@@ -644,95 +566,109 @@ if (sameDisk) {
     if (workerCount < 2) workerCount = 2;
     if (workerCount > MAX_WORKER_THREADS) workerCount = MAX_WORKER_THREADS;
     g_bufferSize = tunedBuffer;
-    int largeConc = 8;
-    if (sameDisk) largeConc = 2;
-    else if (srcType == DISK_HDD || dstType == DISK_HDD) largeConc = 4;
-    else if (srcType == DISK_USB || dstType == DISK_USB) largeConc = 2;
-    else if (srcType == DISK_NETWORK || dstType == DISK_NETWORK) largeConc = 4;
-    if (hLargeFileSem) CloseHandle(hLargeFileSem);
-    hLargeFileSem = CreateSemaphoreW(NULL, largeConc, largeConc, NULL);
+
     if (hStopEvent) CloseHandle(hStopEvent);
     hStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (hScanDoneEvent) CloseHandle(hScanDoneEvent);
     hScanDoneEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-    // 重置全局限速器（漏桶）
+    if (hWakeEvent) CloseHandle(hWakeEvent);
+    hWakeEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+
     g_limLastTick = 0;
     g_limDebtBytes = 0;
 
-    // 大文件缓冲池：槽位数=大文件并发上限，总量封顶 256MB，64KB 对齐。
-    // 失败则 g_bufPool 保持 NULL，复制时回退每线程 TLS 缓冲。
-    if (g_bufPool) { VirtualFree(g_bufPool, 0, MEM_RELEASE); g_bufPool = NULL; }
-    g_bufPool = NULL; g_bufPoolCount = 0; g_bufPoolSlotSize = 0; g_bufFreeCount = 0;
-    {
-        size_t slotSize = g_bufferSize;
-        const size_t POOL_CAP = 256ULL * 1024 * 1024;
-        if ((unsigned long long)slotSize * (unsigned)largeConc > POOL_CAP) {
-            slotSize = (size_t)(POOL_CAP / (unsigned)largeConc);
-            slotSize = (slotSize / (64 * 1024)) * (64 * 1024);
-            if (slotSize < 64 * 1024) slotSize = 64 * 1024;
-        }
-        size_t total = slotSize * (size_t)largeConc;
-        unsigned char* pool = (unsigned char*)VirtualAlloc(NULL, total, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (pool) {
-            g_bufPool = pool;
-            g_bufPoolSlotSize = slotSize;
-            g_bufPoolCount = largeConc;
-            for (int i = 0; i < largeConc; i++) g_bufFreeSlots[i] = largeConc - 1 - i;
-            g_bufFreeCount = largeConc;
-        }
-    }
+    if (g_hIOCP) CloseHandle(g_hIOCP);
+    g_hIOCP = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
 
     HANDLE* workers = (HANDLE*)malloc(workerCount * sizeof(HANDLE));
     if (!workers) {
         isCopying = 0;
         free(pPaths);
-        return 0;
-    }
-    hWakeEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-    g_workerHandleCount = workerCount;
-    for (int i = 0; i < workerCount; i++) {
-        workers[i] = CreateThread(NULL, 0, WorkerThreadProc, NULL, 0, NULL);
-        g_workerHandles[i] = workers[i];
-        if (!workers[i]) ShowError(L"dialog_error_thread");
-    }
-    hScanThread = CreateThread(NULL, 0, ScanThreadProc, pPaths, 0, NULL);
-    if (!hScanThread) {
-        ShowError(L"dialog_error_thread");
-        stopRequested = 1;
-        if (hWakeEvent) { for (int i = 0; i < workerCount; i++) SetEvent(hWakeEvent); }
-        WaitForMultipleObjects(workerCount, workers, TRUE, 5000);
-        for (int i = 0; i < workerCount; i++) if (workers[i]) CloseHandle(workers[i]);
-        free(workers);
-        g_workerHandleCount = 0;
-        memset(g_workerHandles, 0, sizeof(g_workerHandles));
-        if (hWakeEvent) { CloseHandle(hWakeEvent); hWakeEvent = NULL; }
-        if (hLargeFileSem) { CloseHandle(hLargeFileSem); hLargeFileSem = NULL; }
+        if (g_hIOCP) { CloseHandle(g_hIOCP); g_hIOCP = NULL; }
         if (hStopEvent) { CloseHandle(hStopEvent); hStopEvent = NULL; }
         if (hScanDoneEvent) { CloseHandle(hScanDoneEvent); hScanDoneEvent = NULL; }
-        if (g_bufPool) { VirtualFree(g_bufPool, 0, MEM_RELEASE); g_bufPool = NULL; }
-        g_bufPoolCount = 0; g_bufPoolSlotSize = 0; g_bufFreeCount = 0;
+        if (hWakeEvent) { CloseHandle(hWakeEvent); hWakeEvent = NULL; }
+        rpmalloc_thread_finalize();
+        return 0;
+    }
+    memset(workers, 0, workerCount * sizeof(HANDLE));
+    g_workerHandleCount = 0;
+
+    g_useIOCP = (currentMode == MODE_EXTREME) ? TRUE : FALSE;
+
+    int started = 0;
+    for (int i = 0; i < workerCount; i++) {
+        if (g_useIOCP) {
+            workers[i] = CreateThread(NULL, 0, IOCPWorkerThreadProc, NULL, 0, NULL);
+        } else {
+            workers[i] = CreateThread(NULL, 0, EventWorkerThreadProc, NULL, 0, NULL);
+        }
+        if (workers[i]) {
+            g_workerHandles[i] = workers[i];
+            started++;
+        }
+    }
+    g_workerHandleCount = started;
+
+    hScanThread = CreateThread(NULL, 0, ScanThreadProc, pPaths, 0, NULL);
+    if (!hScanThread) {
+        stopRequested = 1;
+        if (g_useIOCP) {
+            for (int i = 0; i < g_workerHandleCount; i++) {
+                if (g_workerHandles[i]) PostQueuedCompletionStatus(g_hIOCP, 0, 999, NULL);
+            }
+        } else {
+            if (hWakeEvent) { for (int i = 0; i < g_workerHandleCount; i++) SetEvent(hWakeEvent); }
+            if (hScanDoneEvent) SetEvent(hScanDoneEvent);
+        }
+        WaitForMultipleObjects(g_workerHandleCount, workers, TRUE, INFINITE);
+        for (int i = 0; i < workerCount; i++) if (workers[i]) CloseHandle(workers[i]);
+        free(workers);
         isCopying = 0;
         free(pPaths);
+        if (g_hIOCP) { CloseHandle(g_hIOCP); g_hIOCP = NULL; }
+        if (hStopEvent) { CloseHandle(hStopEvent); hStopEvent = NULL; }
+        if (hScanDoneEvent) { CloseHandle(hScanDoneEvent); hScanDoneEvent = NULL; }
+        if (hWakeEvent) { CloseHandle(hWakeEvent); hWakeEvent = NULL; }
+        g_workerHandleCount = 0;
+        memset(g_workerHandles, 0, sizeof(g_workerHandles));
+        rpmalloc_thread_finalize();
         return 0;
     }
 
-    if (hWakeEvent) { for (int i = 0; i < workerCount; i++) SetEvent(hWakeEvent); }
-    WaitForMultipleObjects(workerCount, workers, TRUE, INFINITE);
-    for (int i = 0; i < workerCount; i++) CloseHandle(workers[i]);
+    WaitForSingleObject(hScanThread, INFINITE);
+    CloseHandle(hScanThread);
+    hScanThread = NULL;
+
+    if (g_workerHandleCount > 0) {
+        if (g_useIOCP) {
+            for (int i = 0; i < g_workerHandleCount; i++) {
+                if (g_workerHandles[i]) PostQueuedCompletionStatus(g_hIOCP, 0, 999, NULL);
+            }
+        } else {
+            if (hWakeEvent) { for (int i = 0; i < g_workerHandleCount; i++) SetEvent(hWakeEvent); }
+            if (hScanDoneEvent) SetEvent(hScanDoneEvent);
+        }
+        WaitForMultipleObjects(g_workerHandleCount, workers, TRUE, INFINITE);
+    }
+
+    for (int i = 0; i < workerCount; i++) if (workers[i]) CloseHandle(workers[i]);
     free(workers);
     g_workerHandleCount = 0;
     memset(g_workerHandles, 0, sizeof(g_workerHandles));
-    if (hWakeEvent) { CloseHandle(hWakeEvent); hWakeEvent = NULL; }
-    if (hLargeFileSem) { CloseHandle(hLargeFileSem); hLargeFileSem = NULL; }
+
+    if (g_hIOCP) {
+        DWORD bytes; ULONG_PTR key; LPOVERLAPPED pov;
+        while (GetQueuedCompletionStatus(g_hIOCP, &bytes, &key, &pov, 0)) {
+            if (key != 999 && pov != NULL) free((FileNode*)pov);
+        }
+        CloseHandle(g_hIOCP);
+        g_hIOCP = NULL;
+    }
     if (hStopEvent) { CloseHandle(hStopEvent); hStopEvent = NULL; }
     if (hScanDoneEvent) { CloseHandle(hScanDoneEvent); hScanDoneEvent = NULL; }
-    if (hScanThread) {
-        WaitForSingleObject(hScanThread, INFINITE);
-        CloseHandle(hScanThread);
-        hScanThread = NULL;
-    }
-    if (g_bufPool) { VirtualFree(g_bufPool, 0, MEM_RELEASE); g_bufPool = NULL; }
-    g_bufPoolCount = 0; g_bufPoolSlotSize = 0; g_bufFreeCount = 0;
+    if (hWakeEvent) { CloseHandle(hWakeEvent); hWakeEvent = NULL; }
+
     EnterCriticalSection(&cs);
     int wasStopped = stopRequested;
     LeaveCriticalSection(&cs);
@@ -743,8 +679,10 @@ if (sameDisk) {
         copiedBytes = 0; lastProgress = 0; progressValue = 0;
         currentSpeedMB = 0.0; lastSpeedTime = 0; lastSpeedBytes = 0;
         StringCchCopyW(statusText, ARRAYSIZE(statusText), GetText("status_verifying"));
-        int verifyThreads = 4;
-        HANDLE verifyHandles[4];
+        int verifyThreads = g_workerThreads / 2;
+        if (verifyThreads < 1) verifyThreads = 1;
+        if (verifyThreads > 8) verifyThreads = 8;
+        HANDLE verifyHandles[8];
         for (int i = 0; i < verifyThreads; i++) {
             verifyHandles[i] = CreateThread(NULL, 0, VerifyThreadProc, NULL, 0, NULL);
         }
@@ -756,8 +694,6 @@ if (sameDisk) {
         ClearVerifyQueue();
     }
 
-    // —— 原 WM_THREAD_FINISHED 的内核部分 ——
-    if (g_wasAutoStrategy) { g_strategy = STRATEGY_AUTO; g_wasAutoStrategy = FALSE; }
     EnterCriticalSection(&cs);
     isPaused = 0;
     LeaveCriticalSection(&cs);
@@ -779,205 +715,50 @@ if (sameDisk) {
                          stat, totalFiles, done, failStr, verifyStr);
     }
     free(pPaths);
+    rpmalloc_thread_finalize();
     return 0;
 }
 
-DWORD WINAPI WorkerThreadProc(LPVOID lpParam) {
-    (void)lpParam;
-    InitIoPriority();
-    if (g_pSetThreadIoPriority) g_pSetThreadIoPriority(GetCurrentThread(), 4);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
-    wchar_t src[MAX_PATH], dst[MAX_PATH];
-    while (1) {
-        EnterCriticalSection(&cs);
-        if (stopRequested) { LeaveCriticalSection(&cs); break; }
-        FileNode* node = DequeueNode();
-        BOOL done = (!node && scanDone);
-        LeaveCriticalSection(&cs);
-        if (done) break;
-        if (!node) {
-            // 必须同时等待"扫描结束"和"停止"事件，否则空树/文件数少于线程数
-            // 或用户停止时，worker 会永久挂在自动复位的 hWakeEvent 上。
-            HANDLE waits[3] = { hWakeEvent, hScanDoneEvent, hStopEvent };
-            int n = 0;
-            if (hWakeEvent) waits[n++] = hWakeEvent;
-            if (hScanDoneEvent) waits[n++] = hScanDoneEvent;
-            if (hStopEvent) waits[n++] = hStopEvent;
-            if (n > 0) WaitForMultipleObjects(n, waits, FALSE, INFINITE);
-            else Sleep(1);
-            continue;
-        }
-        // 暂停门：小文件走 CopyFileEx 期间不可中断，必须在复制前响应暂停
-        while (isPaused && !stopRequested) Sleep(10);
-        if (stopRequested) { free(node); break; }
-        wcscpy(src, node->src); wcscpy(dst, node->dst);
-        long long nodeFsize = node->fsize;
-        DWORD nodeFattrs = node->fattrs;
-        FILETIME nodeFtime = node->fwriteTime;
-        free(node);
-        BOOL copyOk = FALSE;
-        DWORD lastErr = 0;
-        for (int retry = 0; retry < 3; retry++) {
-            if (stopRequested) break;
-            copyOk = CopySingleFile(src, dst, nodeFsize, nodeFattrs, &nodeFtime);
-            if (copyOk) break;
-            lastErr = GetLastError();
-            if (retry < 2 && !stopRequested) {
-                for (int s = 0; s < 20 && !stopRequested; s++) Sleep(10);
-            }
-        }
-        if (!copyOk) {
-            if (stopRequested) break;
-            InterlockedIncrement((LONG volatile*)&failedFiles);
-            int idx = InterlockedIncrement((LONG volatile*)&g_failCount) - 1;
-            if (idx < MAX_FAIL_LIST) {
-                wcscpy_s(g_failList[idx], MAX_PATH, src);
-                g_failErrors[idx] = lastErr;
-            }
-
-            continue;
-        }
-        InterlockedIncrement((LONG volatile*)&copiedFiles);
+DWORD CALLBACK CopyProgressRoutine(
+    LARGE_INTEGER TotalFileSize,
+    LARGE_INTEGER TotalBytesTransferred,
+    LARGE_INTEGER StreamSize,
+    LARGE_INTEGER StreamBytesTransferred,
+    DWORD dwStreamNumber,
+    DWORD dwCallbackReason,
+    HANDLE hSourceFile,
+    HANDLE hDestinationFile,
+    LPVOID lpData
+) {
+    if (stopRequested) {
+        return PROGRESS_CANCEL;
     }
-    if (tls_copyBuf) { _aligned_free(tls_copyBuf); tls_copyBuf = NULL; tls_copyBufSize = 0; }
-    return 0;
+
+    while (isPaused && !stopRequested) {
+        Sleep(50);
+    }
+
+    // 限速：大文件由 CopyFileEx 的分块回调按增量消耗全局令牌桶
+    if (lpData) {
+        LARGE_INTEGER* plast = (LARGE_INTEGER*)lpData;
+        if (dwCallbackReason == CALLBACK_STREAM_SWITCH) {
+            plast->QuadPart = 0;
+        } else {
+            long long delta = (long long)(TotalBytesTransferred.QuadPart - plast->QuadPart);
+            plast->QuadPart = TotalBytesTransferred.QuadPart;
+            if (delta > 0) RateLimitWait(delta);
+        }
+    }
+
+    return PROGRESS_CONTINUE;
 }
 
-BOOL VerifyFileCopy(const wchar_t* src, const wchar_t* dst) {
-    WIN32_FILE_ATTRIBUTE_DATA srcAttr, dstAttr;
-    if (!GetFileAttributesExW(src, GetFileExInfoStandard, &srcAttr)) return FALSE;
-    if (!GetFileAttributesExW(dst, GetFileExInfoStandard, &dstAttr)) return FALSE;
-    if (srcAttr.nFileSizeHigh != dstAttr.nFileSizeHigh || srcAttr.nFileSizeLow != dstAttr.nFileSizeLow) {
-
-        return FALSE;
-    }
-    LARGE_INTEGER fs;
-    fs.HighPart = srcAttr.nFileSizeHigh;
-    fs.LowPart = srcAttr.nFileSizeLow;
-    if (fs.QuadPart == 0) return TRUE;
-
-    HANDLE hS = INVALID_HANDLE_VALUE;
-    HANDLE hD = INVALID_HANDLE_VALUE;
-    int retry = 0;
-    // 源文件通常不会被杀毒软件锁，但也加个重试
-    while (retry < 100) {
-        hS = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-        if (hS != INVALID_HANDLE_VALUE) break;
-        Sleep(20);
-        retry++;
-    }
-    if (hS == INVALID_HANDLE_VALUE) {
-
-        return FALSE;
-    }
-
-    retry = 0;
-    // 目标文件刚写完，极可能被杀毒软件锁定，最多等 2 秒
-    while (retry < 100) {
-        hD = CreateFileW(dst, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-        if (hD != INVALID_HANDLE_VALUE) break;
-        Sleep(20);
-        retry++;
-    }
-    if (hD == INVALID_HANDLE_VALUE) {
-
-        CloseHandle(hS);
-        return FALSE;
-    }
-
-    const DWORD bufSize = 1024 * 1024;
-    char* bufS = (char*)malloc(bufSize);
-    char* bufD = (char*)malloc(bufSize);
-    if (!bufS || !bufD) {
-        free(bufS); free(bufD);
-        CloseHandle(hS); CloseHandle(hD);
-        return FALSE;
-    }
-    BOOL ok = TRUE;
-    while (1) {
-        DWORD brS = 0, brD = 0;
-        if (!ReadFile(hS, bufS, bufSize, &brS, NULL)) { ok = FALSE; break; }
-        if (!ReadFile(hD, bufD, bufSize, &brD, NULL)) { ok = FALSE; break; }
-        if (brS != brD) {
-
-            ok = FALSE; break;
-        }
-        if (brS == 0) break;
-        if (memcmp(bufS, bufD, brS) != 0) {
-
-            ok = FALSE; break;
-        }
-        if (stopRequested) { ok = FALSE; break; }
-    }
-    free(bufS); free(bufD);
-    CloseHandle(hS); CloseHandle(hD);
-    return ok;
-}
-
-HANDLE ForceCreateFileRead(const wchar_t* path, DWORD flags) {
-    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, flags, NULL);
-    if (h != INVALID_HANDLE_VALUE) return h;
-    DWORD err = GetLastError();
-    if (err == ERROR_SHARING_VIOLATION) {
-        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                        NULL, OPEN_EXISTING, flags, NULL);
-        if (h != INVALID_HANDLE_VALUE) return h;
-        err = GetLastError();
-    }
-    if (err == ERROR_ACCESS_DENIED) {
-        SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
-        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, flags, NULL);
-        if (h != INVALID_HANDLE_VALUE) return h;
-        PACL emptyAcl = (PACL)LocalAlloc(LPTR, 256);
-        if (emptyAcl) {
-            if (InitializeAcl(emptyAcl, 256, ACL_REVISION)) {
-                SetNamedSecurityInfoW((wchar_t*)path, SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                    NULL, NULL, emptyAcl, NULL);
-            }
-            LocalFree(emptyAcl);
-        }
-        h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, flags, NULL);
-        if (h != INVALID_HANDLE_VALUE) return h;
-    }
-    return CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                       NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-}
-
-HANDLE ForceCreateFileWrite(const wchar_t* path, DWORD flags) {
-    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, flags, NULL);
-    if (h != INVALID_HANDLE_VALUE) return h;
-    DWORD err = GetLastError();
-    if (err == ERROR_ACCESS_DENIED) {
-        SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
-        h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, flags, NULL);
-        if (h != INVALID_HANDLE_VALUE) return h;
-        PACL emptyAcl = (PACL)LocalAlloc(LPTR, 256);
-        if (emptyAcl) {
-            if (InitializeAcl(emptyAcl, 256, ACL_REVISION)) {
-                SetNamedSecurityInfoW((wchar_t*)path, SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                    NULL, NULL, emptyAcl, NULL);
-            }
-            LocalFree(emptyAcl);
-        }
-        h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, flags, NULL);
-        if (h != INVALID_HANDLE_VALUE) return h;
-    }
-    if (err == ERROR_SHARING_VIOLATION) {
-        h = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, flags, NULL);
-        if (h != INVALID_HANDLE_VALUE) return h;
-    }
-    return CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-}
-
-BOOL CopySingleFile(const wchar_t* src, const wchar_t* dst, long long fsize, DWORD fattrs, const FILETIME* fwriteTime) {
+BOOL CopySingleFile(const wchar_t* src, const wchar_t* dst, long long fsize, DWORD fattrs, const FILETIME* fwriteTime, const FILETIME* fcreateTime) {
     WIN32_FILE_ATTRIBUTE_DATA dstAttr;
     memset(&dstAttr, 0, sizeof(dstAttr));
     LARGE_INTEGER srcSize;
     srcSize.QuadPart = fsize;
 
-    // 1. 断点跳过逻辑
     if (!g_destIsFresh) {
         BOOL dstExists = GetFileAttributesExW(dst, GetFileExInfoStandard, &dstAttr);
         if (dstExists && fwriteTime) {
@@ -994,43 +775,159 @@ BOOL CopySingleFile(const wchar_t* src, const wchar_t* dst, long long fsize, DWO
         }
     }
 
-    // 2. 全局限速（按文件大小粗粒度）
-    if (speedLimitKB != 0) {
-        RateLimitWait(fsize);
-        if (stopRequested) return FALSE;
+    if (fsize == 0 && !(fattrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (CopyFileW(src, dst, FALSE)) {
+            HANDLE hTime = CreateFileW(dst, FILE_WRITE_ATTRIBUTES,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                       NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hTime != INVALID_HANDLE_VALUE) {
+                SetFileTime(hTime, fcreateTime, NULL, fwriteTime);
+                CloseHandle(hTime);
+            }
+            if (fattrs != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(dst, fattrs);
+            return TRUE;
+        }
     }
 
-    // 3. 统一使用 CopyFileExW（内核态复制，保证文件大小绝对正确）
-    BOOL result = CopyFileExW(src, dst, NULL, NULL, NULL, 0);
+    // 限速：小文件（<=1MiB）在复制前预占令牌（CopyFileEx 对这类文件往往只在结束时回调一次，
+    // 事后等待无法阻止突发）；大文件交给 CopyProgressRoutine 按块消耗令牌桶，避免整文件预等待。
+    if (fsize > 0 && fsize <= (1LL << 20)) {
+        RateLimitWait(fsize);
+    }
+    LARGE_INTEGER lastCb;
+    lastCb.QuadPart = 0;
+    LPVOID cbCtx = (fsize > (1LL << 20)) ? (LPVOID)&lastCb : NULL;
+
+    BOOL result = CopyFileExW(src, dst, CopyProgressRoutine, cbCtx, NULL, 0);
     if (!result && GetLastError() == ERROR_ACCESS_DENIED) {
         SetFileAttributesW(dst, FILE_ATTRIBUTE_NORMAL);
-        result = CopyFileExW(src, dst, NULL, NULL, NULL, 0);
-    }
-    if (!result) return FALSE;
-
-    // 4. 恢复文件属性
-    if (fattrs != INVALID_FILE_ATTRIBUTES) {
-        SetFileAttributesW(dst, fattrs);
+        lastCb.QuadPart = 0;
+        result = CopyFileExW(src, dst, CopyProgressRoutine, cbCtx, NULL, 0);
     }
 
-    // 5. 强制落盘（校验开启时，防止读到的只是内存缓存）
+    if (!result) {
+        DeleteFileW(dst);
+        return FALSE;
+    }
+
+    HANDLE hTime = CreateFileW(dst, FILE_WRITE_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hTime != INVALID_HANDLE_VALUE) {
+        SetFileTime(hTime, fcreateTime, NULL, fwriteTime);
+        CloseHandle(hTime);
+    }
+
     if (enableVerify) {
-        HANDLE hFlush = CreateFileW(dst, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFlush == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED) {
+        HANDLE hFlush = CreateFileW(dst, GENERIC_WRITE,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFlush == INVALID_HANDLE_VALUE) {
             SetFileAttributesW(dst, FILE_ATTRIBUTE_NORMAL);
-            hFlush = CreateFileW(dst, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            hFlush = CreateFileW(dst, GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         }
         if (hFlush != INVALID_HANDLE_VALUE) {
             FlushFileBuffers(hFlush);
             CloseHandle(hFlush);
-            if (fattrs != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(dst, fattrs);
         }
     }
 
+    if (fattrs != INVALID_FILE_ATTRIBUTES) SetFileAttributesW(dst, fattrs);
+
     InterlockedAdd64((LONG64 volatile*)&copiedBytes, fsize);
     return TRUE;
+}
+
+static void ProcessNode(FileNode* node) {
+    wchar_t src[MAX_PATH], dst[MAX_PATH];
+    long long nodeFsize = node->fsize;
+    DWORD nodeFattrs = node->fattrs;
+    FILETIME nodeFtime = node->fwriteTime;
+    FILETIME nodeFctime = node->fcreateTime;
+    wcscpy(src, node->src);
+    wcscpy(dst, node->dst);
+    free(node);
+
+    while (isPaused && !stopRequested) Sleep(10);
+    if (stopRequested) return;
+
+    BOOL copyOk = FALSE;
+    DWORD lastErr = 0;
+    for (int retry = 0; retry < 3; retry++) {
+        if (stopRequested) break;
+        copyOk = CopySingleFile(src, dst, nodeFsize, nodeFattrs, &nodeFtime, &nodeFctime);
+        if (copyOk) break;
+        lastErr = GetLastError();
+        if (retry < 2 && !stopRequested) {
+            for (int s = 0; s < 20 && !stopRequested; s++) Sleep(10);
+        }
+    }
+    if (!copyOk) {
+        if (stopRequested) return;
+        InterlockedIncrement((LONG volatile*)&failedFiles);
+        int idx = InterlockedIncrement((LONG volatile*)&g_failCount) - 1;
+        if (idx < MAX_FAIL_LIST) {
+            wcscpy_s(g_failList[idx], MAX_PATH, src);
+            g_failErrors[idx] = lastErr;
+        }
+        return;
+    }
+    InterlockedIncrement((LONG volatile*)&copiedFiles);
+}
+
+DWORD WINAPI EventWorkerThreadProc(LPVOID lpParam) {
+    (void)lpParam;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    InitIoPriority();
+    if (g_pSetThreadIoPriority) g_pSetThreadIoPriority(GetCurrentThread(), 4);
+    while (1) {
+        EnterCriticalSection(&cs);
+        if (stopRequested) { LeaveCriticalSection(&cs); break; }
+        FileNode* node = DequeueNode();
+        BOOL done = (!node && scanDone);
+        LeaveCriticalSection(&cs);
+        if (done) break;
+        if (!node) {
+            HANDLE waits[3] = { hWakeEvent, hScanDoneEvent, hStopEvent };
+            int n = 0;
+            if (hWakeEvent) waits[n++] = hWakeEvent;
+            if (hScanDoneEvent) waits[n++] = hScanDoneEvent;
+            if (hStopEvent) waits[n++] = hStopEvent;
+            if (n > 0) WaitForMultipleObjects(n, waits, FALSE, INFINITE);
+            else Sleep(1);
+            continue;
+        }
+        ProcessNode(node);
+    }
+    rpmalloc_thread_finalize();
+    return 0;
+}
+
+DWORD WINAPI IOCPWorkerThreadProc(LPVOID lpParam) {
+    (void)lpParam;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    InitIoPriority();
+    if (g_pSetThreadIoPriority) g_pSetThreadIoPriority(GetCurrentThread(), 4);
+    while (1) {
+        if (stopRequested) break;
+        while (isPaused && !stopRequested) Sleep(10);
+        if (stopRequested) break;
+
+        DWORD bytes;
+        ULONG_PTR key;
+        LPOVERLAPPED pov;
+        BOOL ok = GetQueuedCompletionStatus(g_hIOCP, &bytes, &key, &pov, INFINITE);
+        if (key == 999) break;
+        if (!ok && pov == NULL) continue;
+        FileNode* node = (FileNode*)pov;
+        if (!node) continue;
+        if (stopRequested) { free(node); break; }
+        ProcessNode(node);
+    }
+    rpmalloc_thread_finalize();
+    return 0;
 }
 
 DWORD WINAPI VerifyThreadProc(LPVOID lpParam) {
@@ -1052,12 +949,70 @@ DWORD WINAPI VerifyThreadProc(LPVOID lpParam) {
                 wcscpy_s(g_failList[idx], MAX_PATH, cur->src);
                 g_failErrors[idx] = 999;
             }
-
         }
         InterlockedAdd64((LONG64 volatile*)&verifiedBytes, fsize);
         free(cur);
     }
+    rpmalloc_thread_finalize();
     return 0;
+}
+
+BOOL VerifyFileCopy(const wchar_t* src, const wchar_t* dst) {
+    WIN32_FILE_ATTRIBUTE_DATA srcAttr, dstAttr;
+    if (!GetFileAttributesExW(src, GetFileExInfoStandard, &srcAttr)) return FALSE;
+    if (!GetFileAttributesExW(dst, GetFileExInfoStandard, &dstAttr)) return FALSE;
+    if (srcAttr.nFileSizeHigh != dstAttr.nFileSizeHigh || srcAttr.nFileSizeLow != dstAttr.nFileSizeLow) {
+        return FALSE;
+    }
+    LARGE_INTEGER fs;
+    fs.HighPart = srcAttr.nFileSizeHigh;
+    fs.LowPart = srcAttr.nFileSizeLow;
+    if (fs.QuadPart == 0) return TRUE;
+
+    HANDLE hS = INVALID_HANDLE_VALUE;
+    HANDLE hD = INVALID_HANDLE_VALUE;
+    int retry = 0;
+    while (retry < 100) {
+        hS = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        if (hS != INVALID_HANDLE_VALUE) break;
+        Sleep(20);
+        retry++;
+    }
+    if (hS == INVALID_HANDLE_VALUE) return FALSE;
+
+    retry = 0;
+    while (retry < 100) {
+        hD = CreateFileW(dst, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+        if (hD != INVALID_HANDLE_VALUE) break;
+        Sleep(20);
+        retry++;
+    }
+    if (hD == INVALID_HANDLE_VALUE) {
+        CloseHandle(hS);
+        return FALSE;
+    }
+
+    const DWORD bufSize = 1024 * 1024;
+    char* bufS = (char*)malloc(bufSize);
+    char* bufD = (char*)malloc(bufSize);
+    if (!bufS || !bufD) {
+        free(bufS); free(bufD);
+        CloseHandle(hS); CloseHandle(hD);
+        return FALSE;
+    }
+    BOOL ok = TRUE;
+    while (1) {
+        DWORD brS = 0, brD = 0;
+        if (!ReadFile(hS, bufS, bufSize, &brS, NULL)) { ok = FALSE; break; }
+        if (!ReadFile(hD, bufD, bufSize, &brD, NULL)) { ok = FALSE; break; }
+        if (brS != brD) { ok = FALSE; break; }
+        if (brS == 0) break;
+        if (memcmp(bufS, bufD, brS) != 0) { ok = FALSE; break; }
+        if (stopRequested) { ok = FALSE; break; }
+    }
+    free(bufS); free(bufD);
+    CloseHandle(hS); CloseHandle(hD);
+    return ok;
 }
 
 void CreateDirectoriesRecursive(const wchar_t* path) {
@@ -1093,10 +1048,8 @@ int CheckImpossibleTask(const wchar_t* src, const wchar_t* dst) {
     return 0;
 }
 
-// ============================================================
-// 导出 C 接口
-// ============================================================
 BOOL CopyCore_Init(void) {
+    rpmalloc_initialize(0);
     if (!g_csInited) {
         InitializeCriticalSectionAndSpinCount(&cs, 4000);
         g_csInited = TRUE;
@@ -1113,8 +1066,12 @@ void CopyCore_Shutdown(void) {
         LeaveCriticalSection(&cs);
         if (hStopEvent) SetEvent(hStopEvent);
         if (hScanDoneEvent) SetEvent(hScanDoneEvent);
-        if (hWakeEvent) { for (int i = 0; i < 32; i++) SetEvent(hWakeEvent); }
-        if (hLargeFileSem) { for (int i = 0; i < 32; i++) ReleaseSemaphore(hLargeFileSem, 1, NULL); }
+        if (hWakeEvent) { for (int i = 0; i < MAX_WORKER_THREADS; i++) SetEvent(hWakeEvent); }
+        if (g_hIOCP) {
+            for (int i = 0; i < MAX_WORKER_THREADS; i++) {
+                PostQueuedCompletionStatus(g_hIOCP, 0, 999, NULL);
+            }
+        }
         for (int i = 0; i < g_workerHandleCount; i++) {
             if (g_workerHandles[i]) CancelSynchronousIo(g_workerHandles[i]);
         }
@@ -1131,6 +1088,7 @@ void CopyCore_Shutdown(void) {
         DeleteCriticalSection(&cs);
         g_csInited = FALSE;
     }
+    rpmalloc_finalize();
 }
 
 BOOL CopyCore_Start(const wchar_t* src, const wchar_t* dst) {
@@ -1156,7 +1114,6 @@ BOOL CopyCore_Start(const wchar_t* src, const wchar_t* dst) {
     StringCchCopyW(dstPath, ARRAYSIZE(dstPath), dst);
 
     progressValue = 0; lastProgress = 0; isCopying = 1; isPaused = 0; stopRequested = 0;
-    if (hStopEvent) ResetEvent(hStopEvent);
     scanDone = 0;
     currentSpeedMB = 0.0; lastSpeedTime = 0; lastSpeedBytes = 0;
     StringCchCopyW(statusText, ARRAYSIZE(statusText), GetText("status_scanning"));
@@ -1201,7 +1158,12 @@ void CopyCore_Stop(void) {
     LeaveCriticalSection(&cs);
     if (hStopEvent) SetEvent(hStopEvent);
     if (hScanDoneEvent) SetEvent(hScanDoneEvent);
-    if (hWakeEvent) { for (int i = 0; i < 32; i++) SetEvent(hWakeEvent); }
+    if (hWakeEvent) { for (int i = 0; i < MAX_WORKER_THREADS; i++) SetEvent(hWakeEvent); }
+    if (g_hIOCP) {
+        for (int i = 0; i < MAX_WORKER_THREADS; i++) {
+            PostQueuedCompletionStatus(g_hIOCP, 0, 999, NULL);
+        }
+    }
     for (int i = 0; i < g_workerHandleCount; i++) {
         if (g_workerHandles[i]) CancelSynchronousIo(g_workerHandles[i]);
     }
@@ -1226,15 +1188,12 @@ void CopyCore_GetStatus(
     wchar_t* out_statusText, int out_statusBufLen)
 {
     if (isCopying) {
-        // 与原 WM_TIMER(wParam==1) 完全相同的状态计算
         ULONGLONG now = GetTickCount64();
         long long curBytes = isVerifying ? verifiedBytes : copiedBytes;
         if (lastSpeedTime == 0) { lastSpeedTime = now; lastSpeedBytes = curBytes; }
         if (now - lastSpeedTime >= 1000) {
             double deltaMB = (double)(curBytes - lastSpeedBytes) / (1024.0 * 1024.0);
             double deltaSec = (double)(now - lastSpeedTime) / 1000.0;
-            // 旧阈值 10MB/s 导致 U 盘/小文件场景速度永远显示 0；
-            // 改为始终更新 + EMA 平滑（0.6 旧值/0.4 新值），慢盘也能显示。
             double inst = deltaSec > 0 ? deltaMB / deltaSec : 0.0;
             currentSpeedMB = (currentSpeedMB <= 0.0) ? inst : (currentSpeedMB * 0.6 + inst * 0.4);
             lastSpeedTime = now;
@@ -1242,11 +1201,7 @@ void CopyCore_GetStatus(
         }
         if (!scanDone) {
             progressValue = 0;
-            if (g_countOnly) {
-                StringCchPrintfW(statusText, ARRAYSIZE(statusText), L"%s", GetText("analyzing"));
-            } else {
-                StringCchPrintfW(statusText, ARRAYSIZE(statusText), GetText("scanning_files"), filesScanned);
-            }
+            StringCchPrintfW(statusText, ARRAYSIZE(statusText), GetText("scanning_files"), filesScanned);
         } else {
             long long progressBytes = isVerifying ? verifiedBytes : copiedBytes;
             if (totalBytes > 0) {
