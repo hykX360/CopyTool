@@ -1,18 +1,29 @@
 /* ============================================================
-   材质系统：M1-M4
-   M1 液态玻璃  → WebGL 渲染，只需 data-liquid-glass 属性
-   M2 毛玻璃    → WebGL 内合成（.m2-panel 由 fragment-main.glsl 绘制）
+   材质系统：M1-M4（WebGL 管线已下线，全部走 CSS）
+   M1 液态玻璃  → .box 由 CSS 玻璃 + renderer.js 果冻交互实现
+   M2 毛玻璃    → 本文件用 backdrop-filter 实现（.m2-panel）
    M3 玻璃卡片  → 备用
    M4 实心      → 本文件定义
    ============================================================ */
 
-/* ================= M2：主面板 ================= */
+/* ================= M2：主面板（纯 CSS 毛玻璃） ================= */
+/* 兜底：不支持 backdrop-filter 的极老环境用近实色浅灰，保证可读 */
 .m2-panel {
     position: relative;
-    background: transparent;
-    border: 1px solid transparent;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
+    background: rgba(244, 245, 248, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.75);
     border-radius: 20px;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.65),
+        0 8px 32px rgba(0, 0, 0, 0.10);
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .m2-panel {
+        background: rgba(255, 255, 255, 0.50);
+        -webkit-backdrop-filter: blur(24px) saturate(1.6);
+        backdrop-filter: blur(24px) saturate(1.6);
+    }
 }
 
 .main-panel {
@@ -191,11 +202,10 @@
     color: #505864;
 }
 
-/* ================= M1：主操作按钮（液态玻璃占位） ================= */
+/* ================= M1：主操作按钮（液态玻璃占位，已弃用） ================= */
 /*
-   .glass-button 的实际视觉由 WebGL 渲染。
-   这里只定义布局、尺寸、文字样式。
-   WebGL 会在 [data-liquid-glass] 元素下方绘制玻璃透镜。
+   遗留类：WebGL 管线已下线，当前 HTML 没有任何元素使用 .glass-button，
+   实际按钮视觉走 .box（见 styles.css）。此块保留仅为历史参考，勿再引用。
 */
 .glass-button {
     position: relative;
@@ -209,9 +219,8 @@
     font-family: inherit;
     cursor: pointer;
 
-    /* 让 WebGL canvas 接收指针 */
+    /* 遗留：WebGL 时代让 canvas 接收指针；该类已无人使用 */
     pointer-events: none;
-    /* WebGL 会读这个元素的 getBoundingClientRect */
     z-index: 10;
     display: inline-flex;
     align-items: center;

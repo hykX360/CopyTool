@@ -209,21 +209,11 @@ struct EmbeddedAsset { const wchar_t* path; int id; const wchar_t* mime; };
 static const EmbeddedAsset g_assets[] = {
     { L"/index.html",                     IDR_WEBUI_INDEX,        L"text/html; charset=utf-8" },
     { L"/renderer.js",                    IDR_WEBUI_RENDERER_JS,  L"application/javascript; charset=utf-8" },
-    { L"/desktop.js",                     IDR_WEBUI_DESKTOP_JS,   L"application/javascript; charset=utf-8" },
     { L"/copytool-bridge.js",             IDR_WEBUI_BRIDGE_JS,    L"application/javascript; charset=utf-8" },
     { L"/ui.js",                          IDR_WEBUI_UI_JS,        L"application/javascript; charset=utf-8" },
     { L"/css/styles.css",                 IDR_WEBUI_STYLES_CSS,   L"text/css; charset=utf-8" },
     { L"/css/materials.css",              IDR_WEBUI_MATERIALS_CSS,L"text/css; charset=utf-8" },
-    { L"/shaders/vertex.glsl",            IDR_WEBUI_SH_VERTEX,    L"text/plain; charset=utf-8" },
-    { L"/shaders/fragment-bg.glsl",       IDR_WEBUI_SH_BG,        L"text/plain; charset=utf-8" },
-    { L"/shaders/fragment-bg-vblur.glsl", IDR_WEBUI_SH_BG_VBLUR,  L"text/plain; charset=utf-8" },
-    { L"/shaders/fragment-bg-hblur.glsl", IDR_WEBUI_SH_BG_HBLUR,  L"text/plain; charset=utf-8" },
-    { L"/shaders/fragment-main.glsl",     IDR_WEBUI_SH_MAIN,      L"text/plain; charset=utf-8" },
-    { L"/shaders/fragment-main-1.glsl",   IDR_WEBUI_SH_MAIN_1,    L"text/plain; charset=utf-8" },
-    { L"/shaders/test.glsl",              IDR_WEBUI_SH_TEST,      L"text/plain; charset=utf-8" },
-    { L"/shaders/lib/sdf.glsl",           IDR_WEBUI_SH_LIB_SDF,   L"text/plain; charset=utf-8" },
-    { L"/shaders/lib/math.glsl",          IDR_WEBUI_SH_LIB_MATH,  L"text/plain; charset=utf-8" },
-    { L"/shaders/lib/color.glsl",         IDR_WEBUI_SH_LIB_COLOR, L"text/plain; charset=utf-8" },
+    /* WebGL 已下线：desktop.js / shaders/*.glsl 不再嵌入 */
 };
 
 static const EmbeddedAsset* FindAsset(const std::wstring& path) {
