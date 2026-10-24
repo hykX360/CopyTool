@@ -317,9 +317,10 @@ async function main() {
         springX.value = springX.target = 1;
         springY.value = springY.target = 1;
 
-        const baseRect = el.getBoundingClientRect();
-        const baseW = baseRect.width;
-        const baseH = baseRect.height;
+        // 不能在 attach 时测量：设置页按钮此时 display:none，rect 为 0×0，
+        // 补偿会恒为 0，缩放退化成以中心为原点向两侧扩张。改为按下时测量。
+        let baseW = 0;
+        let baseH = 0;
 
         let state = 'idle';
         let pointerId = null;
@@ -343,8 +344,13 @@ async function main() {
             const sx = springX.update(dt);
             const sy = springY.update(dt);
 
-            const tx = dirX * (sx - 1) * baseW / 2;
-            const ty = dirY * (sy - 1) * baseH / 2;
+            // 补偿用 Math.sign 而非连续分量。拖动方向一侧固定不动，
+            // 反方向一侧拉长；斜向拖动时两个轴各自独立做单边固定。
+            // press 态 dirX/dirY 为 0，sign 也为 0，保持居中原点按压放大。
+            const signX = Math.sign(dirX);
+            const signY = Math.sign(dirY);
+            const tx = signX * (sx - 1) * baseW / 2;
+            const ty = signY * (sy - 1) * baseH / 2;
 
             el.style.transform = `translate(${tx}px, ${ty}px) scale(${sx}, ${sy})`;
 
@@ -356,9 +362,6 @@ async function main() {
             if (!settled) {
                 rafId = requestAnimationFrame(tick);
             } else {
-                // 仅当已回弹到原态（target 与 value 均接近 1）时才清空 transform。
-                // 拖拽中停住时 target 仍为拉伸值，若此时清空会导致视觉上跳回原态，
-                // 再次移动时又瞬间跳回拉伸态。
                 if (Math.abs(springX.target - 1) < 0.001 &&
                     Math.abs(springY.target - 1) < 0.001) {
                     el.style.transform = '';
@@ -442,6 +445,12 @@ async function main() {
         function onPointerDown(e) {
             if (e.button !== 0 || state !== 'idle') return;
             e.preventDefault();
+
+            // 按下时元素必然可见，此刻测得的尺寸才是有效的补偿基准。
+            const r = el.getBoundingClientRect();
+            baseW = r.width;
+            baseH = r.height;
+            if (baseW <= 0 || baseH <= 0) return;
 
             pointerId = e.pointerId;
             state = 'pressing';

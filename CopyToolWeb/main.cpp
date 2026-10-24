@@ -19,6 +19,9 @@
 
 #include "WebView2.h"
 #include "webui_res.h"
+#ifndef IDI_APP_ICON
+#define IDI_APP_ICON 101
+#endif
 
 
 typedef HRESULT (WINAPI *PFN_CreateCoreWebView2EnvironmentWithOptions)(
@@ -84,7 +87,7 @@ static bool g_disableStatusPost = false;
 
 static const UINT_PTR TIMER_STATUS = 1;
 
-//日志文件句柄 进程生命周期内单次打开
+#ifdef _DEBUG
 static FILE* g_logFile = NULL;
 
 static void HostLog(const wchar_t* fmt, ...) {
@@ -104,6 +107,9 @@ static void HostLog(const wchar_t* fmt, ...) {
     fflush(g_logFile);
     va_end(ap);
 }
+#else
+static void HostLog(const wchar_t*, ...) {}
+#endif
 
 static std::wstring ExeDir() {
     wchar_t buf[MAX_PATH] = {0};
@@ -1037,6 +1043,17 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmdLine, int nShow) 
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 900, 620,
         NULL, NULL, hInst, NULL);
+
+    // ====== 把图标代码放到窗口创建完毕之后 ======
+    if (g_hwnd) {
+        HICON hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APP_ICON));
+        if (hIcon) {
+            SendMessageW(g_hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+            SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+        }
+    }
+    // ============================================
+
     if (!g_hwnd) return 1;
 
     MARGINS margins = {-1};
@@ -1065,7 +1082,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmdLine, int nShow) 
     if (g_env)       { g_env->lpVtbl->Release(g_env);             g_env = NULL; }
     if (g_controller){ g_controller->lpVtbl->Release(g_controller); g_controller = NULL; }
     if (g_loaderDll) { FreeLibrary(g_loaderDll); g_loaderDll = NULL; }
+    #ifdef _DEBUG
     if (g_logFile)   { fclose(g_logFile); g_logFile = NULL; }
+#endif
     CoUninitialize();
     return 0;
 }
